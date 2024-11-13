@@ -1,0 +1,552 @@
+---
+title: "Exploring bitfields for spatially explicit metadata processing and reuse"
+author: "Dr. Steffen Ehrmann"
+institute: "Macroecology and Society"
+format: 
+  revealjs:
+    logo: iDivLogo.png
+    theme: default 
+    footer: "iDiv | Annual Conference 2024"
+---
+
+## Outline
+
+```{r}
+#| echo: false
+library(bitfield)
+library(checkmate)
+library(purrr)
+library(stringr)
+
+.toDec <- function(x){
+
+  assertCharacter(x = x, any.missing = FALSE)
+
+  out <- map(.x = x, .f = function(ix){
+
+    temp <- str_split(ix, "", simplify = TRUE)
+    radix <- which(temp == ".")
+    if(length(radix) == 0){
+      radix <- length(temp)+1
+      bits <- as.integer(temp)
+    } else {
+      assertIntegerish(x = radix, any.missing = FALSE, len = 1)
+      bits <- as.integer(temp[-radix])
+    }
+    assertSubset(x = bits, choices = c(0, 1))
+
+    sum(bits * 2^((seq(bits) * -1) + radix-1))
+  }) |> unlist()
+
+  # if it's integerish, convert it to integer
+  if(testIntegerish(out)){
+    out <- as.integer(out)
+  }
+
+  return(out)
+}
+```
+
+```{css echo=FALSE}
+.small-output{
+  font-size: 90%  
+}
+```
+
+<!-- Computational workflows in the earth system sciences are becoming increasingly sophisticated, where data of different types and sources are integrated into large-scale, modelled data products. This is partly a consequence of a competition-driven diversification of tools and approaches, with the desirable side effect that we learn more about the earth's spheres from more distinct perspectives. Ideally, sophisticated and complex workflows are better at mapping the sophisticated interaction networks on our planet with less ambiguity. However, the reality is that practical considerations or a lack of resources or time in our projects demand non-ideal decisions, and how that impacts results often needs to be clarified. We quantify the errors of our output, and software engineering uses so-called unit tests, where the output of "smallest units" of code are compared against expected results. While error reporting (of the output) is part of best practice in the earth sciences, analysis of intermediate data typically only happens project-internally but is rarely reported, even though intermediate data of one project are often the starting point of another project. -->
+
+<!-- With the help of the `bitfield` R-package, one can produce (simple) tests that document data and metadata snapshots along a computational workflow and store them in a very compact form (an integer stored as column in a table or raster layer). This resulting *computational footprint* could be called meta-analytic or meta-algorithmic data because it allows documenting and re-using an analysis or algorithm, spatially explicitly. The bitfield is a promising data structure already employed in the MODIS quality flag that allows vast information to be stored in a single integer. In this workshop, you will learn how to use the tools in `bitfield`, get an introduction to the software logic, and we may discuss possible use cases and the future of this technology. -->
+
+-   Rationale
+
+-   The software logic [^1]
+
+-   How to use `bitfield`
+
+-   Open discussion / Hands-On work
+
+[^1]: what are bitfields \| bitfield as data structure \| floating-point numbers
+
+## Rationale
+
+::: incremental
+-   meta data and intermediate data are often discarded, even though they contain useful information
+-   meta data are not spatially explicit or "per observation" (*cf* provenance graph)
+-   how to store and re-use such data efficiently?
+:::
+
+## Rationale - related tools
+
+-   MODIS quality flags
+
+-   grass GIS: [i.modis.qc](https://grass.osgeo.org/grass83/manuals/i.modis.qc.html)
+
+-   python: [custom code](http://karthur.org/2021/fast-bitflag-unpacking-python.html)
+
+-   R: [luna::modis_qc](https://rspatial.org/modis/4-quality.html)
+
+. . .
+
+but also: [Resource description framework (RDF)](https://www.w3.org/TR/rdf11-concepts/) and the [PROV model](https://www.w3.org/TR/2013/NOTE-prov-primer-20130430/)
+
+. . .
+
+-\> No tools to build quality assurance (QA)
+
+## Rationale - why
+
+::: incremental
+1.  Document meta data and intermediate data spatially explicitly.
+
+2.  Provide a provenance graph of the.
+
+3.  Access, process and store such information efficiently.
+:::
+
+. . .
+
+-\> Make workflows more interoperable and re-useable
+
+## Rationale - what
+
+::: incremental
+
+bitfield
+
+:   A sequence of bits that encode information beyond the numeric value of the bit sequence.
+
+(bitfield) operators
+
+:   functions that test a variable according to some test parameters and encode it as a bit flag[^2].
+
+bit registry
+
+:   a data structure mapping bit sequences to (meta) data.
+:::
+
+[^2]: a subset of bits encoding a specific variable
+
+## The software logic
+
+::: columns
+::: {.column width="50%"}
+A bit could be seen as a switch with values on (1) and off (0)\
+
+A byte is made up of eight bits and stores $2^8 = 256$ states\
+
+A bit sequence is read from right to left (*from the most significant to the least significant bit*)
+:::
+
+::: {.column width="50%"}
+
+| Binary | Decimal |
+|--------|---------|
+| 000    | 0       |
+| 001    | 1       |
+| 010    | 2       |
+| 011    | 3       |
+| 100    | 4       |
+| 101    | 5       |
+| ...    | ...     |
+:::
+:::
+
+## The software logic
+
+This can be mapped to some other information\
+
+`01100100` could encode a case where something is tested and where tests two, three and six resulted in 'yes' (encoded as 1) and all others in 'no' (encoded as 0)\
+
+. . . 
+
+or\
+
+. . . 
+
+the first three bits encode the value 3 and the other 5 are again a yes/no test
+
+. . .
+
+-> we need some additional data structure that records the meaning of bits, the *bit registry*
+
+## The software logic
+
+Like decimal numbers, also binary numbers can have a radix point
+
+${101011.101}_2 = {43.625}_{10}$
+
+. . .
+
+... and scientific notation: $1.01011101 * 2^5$ 
+
+## The software logic
+
+To encode numeric values, `bitfield` makes use of *[floating-point notation](https://www.cs.cornell.edu/\~tomf/notes/cps104/floating)*\
+
+x|xxxxxxxx|xxxxxxxxxxxxxxxxxxxxxxx (32 bit)
+
+::: incremental
+
+- sign [1]: positive (0)/negative (1) number
+
+- exponent [8]: the power of scientific notation
+
+- mantissa [23]: what is after the radix point
+
+- bias: a coefficient that changes the value range (127)
+
+:::
+
+. . .
+
+$1.01011101 * 2^5$ = 0|10000100|01011101000000000000000
+
+
+## How to use `bitfield`
+
+1.  setup
+
+2.  operator types
+
+3.  growing a bitfield
+
+4.  encoding
+
+5.  decoding
+
+## 1. setup {auto-animate="true"}
+
+```{r}
+#| eval: false
+#| echo: true
+devtools::install_github("EhrmannS/bitfield")
+```
+
+## 1. setup {auto-animate="true"}
+
+```{r}
+#| eval: false
+#| echo: true
+devtools::install_github("EhrmannS/bitfield")
+
+library(bitfield)
+```
+
+## 2. growing a bitfield {auto-animate="true"}
+
+```{r}
+#| echo: true
+tbl_bityield
+```
+
+## 2. growing a bitfield {auto-animate="true"}
+
+```{r}
+#| eval: false
+#| echo: true
+reg <- bf_registry(name = "yield_QA",
+                   description = "quality assessment of yield data.")
+```
+
+## 2. growing a bitfield {auto-animate="true"}
+
+```{r}
+#| eval: false
+#| echo: true
+reg <- bf_registry(name = "yield_QA",
+                   description = "quality assessment of yield data.")
+
+reg <- bf_na(x = tbl_bityield, test = "x", 
+             pos = 1, registry = reg)
+
+```
+
+## 2. growing a bitfield {auto-animate="true"}
+
+```{r}
+#| eval: false
+#| echo: true
+reg <- bf_registry(name = "yield_QA",
+                   description = "quality assessment of yield data.")
+
+reg <- bf_na(x = tbl_bityield, test = "x", 
+             pos = 1, registry = reg)
+
+reg <- bf_case(x = tbl_bityield, exclusive = FALSE,
+               yield >= 11, 
+               yield < 11 & yield > 9, 
+               yield < 9 & commodity == "maize",
+               registry = reg)
+```
+
+## 2. growing a bitfield {auto-animate="true"}
+
+```{r}
+#| eval: false
+#| echo: true
+reg <- bf_registry(name = "yield_QA",
+                   description = "quality assessment of yield data.")
+
+reg <- bf_na(x = tbl_bityield, test = "x", 
+             pos = 1, registry = reg)
+
+reg <- bf_case(x = tbl_bityield, exclusive = FALSE,
+               yield >= 11, 
+               yield < 11 & yield > 9, 
+               yield < 9 & commodity == "maize",
+               registry = reg)
+
+reg <- bf_length(x = tbl_bityield, test = "y",
+                 registry = reg)
+```
+
+## 2. growing a bitfield {auto-animate="true"}
+
+```{r}
+#| echo: true
+reg <- bf_registry(name = "yield_QA",
+                   description = "quality assessment of yield data.")
+
+reg <- bf_na(x = tbl_bityield, test = "x", 
+             pos = 1, registry = reg)
+
+reg <- bf_case(x = tbl_bityield, exclusive = FALSE,
+               yield >= 11, 
+               yield < 11 & yield > 9, 
+               yield < 9 & commodity == "maize",
+               registry = reg)
+
+reg <- bf_length(x = tbl_bityield, test = "y",
+                 registry = reg)
+
+reg <- bf_numeric(x = tbl_bityield, source = "yield", precision = "half",
+                  registry = reg)
+```
+
+## 2. growing a bitfield {auto-animate="true"}
+
+```{r}
+#| echo: true
+reg
+```
+
+## 2. growing a bitfield {auto-animate="true"}
+
+```{r}
+#| echo: true
+reg
+
+str(reg, max.level = 3)
+```
+
+## 3. operator types {auto-animate="true"}
+
+::: panel-tabset
+### binary
+
+bits: 1\
+output: false, true (0, 1)\
+\
+
+```{r}
+#| eval: false
+#| echo: true
+bf_na(x, test, 
+      pos, na.val, description, registry)
+```
+
+### cases
+
+bits: $log_2 n_{cases}$\
+output: 0 - $n_{cases-1}$ (000, 001, 010, 011, ...)\
+\
+
+```{r}
+#| eval: false
+#| echo: true
+bf_case(x, ..., exclusive,
+        pos, na.val, description, registry)
+```
+
+### counts
+
+bits: bit representation of max count\
+output: integers (0000, 0010, 0111, ...)\
+\
+
+```{r}
+#| eval: false
+#| echo: true
+bf_length(x, test, dec, fill, 
+          pos, na.val, description, registry)
+```
+
+### numeric
+
+bits: depends on precision\
+output: floating-point values\
+\
+
+```{r}
+#| eval: false
+#| echo: true
+bf_numeric(x, source, ..., 
+           pos, na.val, description, registry)
+```
+:::
+
+## 4. encoding {auto-animate="true"}
+
+```{r}
+#| echo: true
+ls(bf_env)
+```
+
+## 4. encoding {auto-animate="true"}
+
+```{r}
+#| echo: true
+ls(bf_env)
+
+bf_env$length_y
+```
+
+## 4. encoding {auto-animate="true"}
+
+```{r}
+#| echo: true
+ls(bf_env)
+
+bf_env$length_y
+
+tbl_bityield
+```
+
+## 4. encoding {auto-animate="true"}
+
+```{r}
+#| echo: true
+ls(bf_env)
+
+bf_env$length_y
+
+str(reg@flags$length_y)
+```
+
+## 4. encoding {auto-animate="true"}
+
+```{r}
+#| echo: true
+ls(bf_env)
+
+bf_env$numeric_yield
+
+str(reg@flags$numeric_yield)
+```
+
+## 4. encoding {auto-animate="true"}
+
+```{r}
+#| echo: true
+field <- bf_encode(registry = reg)
+```
+
+## 4. encoding {auto-animate="true"}
+
+```{r}
+#| echo: true
+field <- bf_encode(registry = reg)
+
+field
+```
+
+## 5. decoding {auto-animate="true"}
+
+here is a break in this code-flow, it happens somewhere else in a downstream application
+
+## 5. decoding {auto-animate="true"}
+
+```{r}
+#| echo: true
+flags <- bf_decode(x = field, registry = reg)
+```
+
+## 5. decoding {auto-animate="true"}
+
+```{r}
+#| echo: true
+flags <- bf_decode(x = field, registry = reg)
+
+flags
+```
+
+## 5. decoding {auto-animate="true"}
+
+```{r}
+#| echo: true
+flags <- bf_decode(x = field, registry = reg)
+
+flags
+
+.toDec(flags$length_y)
+```
+
+## 5. decoding {auto-animate="true"}
+
+```{r}
+#| echo: true
+flags <- bf_decode(x = field, registry = reg)
+
+flags
+
+.toDec(flags$length_y)
+bf_env$length_y
+```
+
+## 5. decoding {auto-animate="true"}
+
+::: small-output
+```{r}
+#| echo: true
+flags <- bf_decode(x = field, registry = reg, lut = TRUE, sep = "|")
+```
+:::
+
+## 5. decoding {auto-animate="true"}
+
+::: small-output
+```{r}
+#| echo: true
+flags <- bf_decode(x = field, registry = reg, lut = TRUE, sep = "|")
+dplyr::pull(flags, bf_bin)
+```
+:::
+
+## 5. decoding {auto-animate="true"}
+
+```{r}
+#| echo: false
+old <- options(pillar.sigfig = 7)
+```
+
+```{r}
+#| echo: true
+tibble::tibble(original = tbl_bityield$yield, 
+               bitfield = bf_env$numeric_yield)
+```
+
+```{r}
+#| echo: false
+options(old)
+```
+
+## Open discussion / Hands-On work
+
+where could this be used? For example, to describe
+
+-   the thematic dimension (species, presence or strength of several effects or drivers)
+-   the temporal dimension (changes, evolution)
+-   models (residuals, error, density distribution of response, ?)
+-   complex algorithms (which data potentially shape the results, ?)
+-   data (how/what process changed the data, ?)
+-   ?
